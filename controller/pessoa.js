@@ -50,7 +50,7 @@ export async function insertPessoa(req, res) {
 export async function updatePessoa(req, res) {
     let pessoa = req.body
     openDb().then(db=>{
-        db.run(`UPDATE Pessoa SET nome=?, idade=? WHERE id=?`, [pessoa.nome, pessoa.idade, pessoa.cargo, pessoa.id])
+        db.run(`UPDATE Pessoa SET nome=?, idade=?, cargo=? WHERE id=?`, [pessoa.nome, pessoa.idade, pessoa.cargo, pessoa.id])
     })
     res.json({
         "statusCode":200
