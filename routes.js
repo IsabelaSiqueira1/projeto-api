@@ -44,14 +44,14 @@ router.post('/login', async (req, res) => {
 router.get('/', (req, res) => {
     res.json({
         "statusCode" : 200,
-        "message": "Api rodandooo!"
+        "message": "Api rodandooo! aleluiaaa eita gloria"
     })
 })
 
 router.get('/pessoas', getPessoas)
-router.get('/pessoa', getPessoa)
+router.get('/pessoa/:id', getPessoa)
 router.post('/pessoa', authenticateToken, insertPessoa)
 router.put('/pessoa', authenticateToken, updatePessoa)
-router.delete('/pessoa', authenticateToken, deletePessoa)
+router.delete('/pessoa/:id', authenticateToken, deletePessoa);
 
 export default router

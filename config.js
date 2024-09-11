@@ -1,9 +1,12 @@
-import sqlite3 from 'sqlite3'
-import { open } from 'sqlite'
+import pg from 'pg';
+const { Pool } = pg;
 
-export async function openDb () {
-  return open({
-    filename: './database.db',
-    driver: sqlite3.Database
-  })
-}
+const pool = new Pool({
+  user: 'postgres',          
+  host: 'postgres', 
+  database: 'postgres',           
+  password: 'postgres',        
+  port: 5432,                   
+})
+
+export default pool
