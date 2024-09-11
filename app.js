@@ -23,3 +23,8 @@ const PORT = 3000;
 app.listen(PORT, () => {
   console.log(`Aplicação rodando na porta ${PORT}`);
 })
+createTable()
+createUserTable()
+
+app.listen(3000, ()=> console.log("Aplicaçao rodando na porta 3000"))
+
