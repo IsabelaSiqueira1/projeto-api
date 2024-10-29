@@ -1,21 +1,21 @@
 import pool from "../config.js";
-import { redisClient } from "../app.js"
+import { redisClient } from "../app.js";
 
 export async function resetSequence() {
   try {
-    const client = await pool.connect()
+    const client = await pool.connect();
     await client.query(`
-      SELECT setval('pessoa_id_seq', (SELECT MAX(id) FROM Pessoa))
-    `)
-    client.release()
+      SELECT setval('pessoa_id_seq', COALESCE((SELECT MAX(id) FROM Pessoa), 1));
+    `);
+    client.release();
   } catch (err) {
-    console.error('Erro ao ajustar a sequência:', err)
+    console.error('Erro ao ajustar a sequência:', err);
   }
 }
 
 export async function createTable() {
   try {
-    const client = await pool.connect()
+    const client = await pool.connect();
     await client.query(`
       CREATE TABLE IF NOT EXISTS Pessoa (
         id SERIAL PRIMARY KEY,
@@ -23,113 +23,204 @@ export async function createTable() {
         idade INT,
         cargo VARCHAR(50)
       )
-    `)
-    console.log('Tabela Pessoa já existe')
-    client.release()
+    `);
+    console.log('Tabela Pessoa já existe');
+    client.release();
   } catch (err) {
-    console.error('Erro ao criar tabela Pessoa:', err)
+    console.error('Erro ao criar tabela Pessoa:', err);
   }
 }
 
 export async function getPessoas(req, res) {
   try {
-    const cacheKey = 'pessoas'
-    const cachedData = await redisClient.get(cacheKey)
-    if (cachedData) {
-      console.log("redis")
-      return res.status(200).json(JSON.parse(cachedData))
+    const cacheKey = 'pessoas';
+    let cachedData;
+
+    // Tentar buscar os dados do Redis
+    try {
+      cachedData = await redisClient.get(cacheKey);
+    } catch (err) {
+      console.error('Erro ao tentar acessar o Redis:', err);
     }
 
-    console.log("db")
-    const client = await pool.connect()
-    const result = await client.query('SELECT * FROM Pessoa')
-    client.release()
+    if (cachedData) {
+      console.log("redis");
+      return res.status(200).json(JSON.parse(cachedData));
+    }
 
-    await redisClient.set(cacheKey, JSON.stringify(result.rows))
-    res.status(200).json(result.rows)
+    console.log("db");
+    const client = await pool.connect();
+    const result = await client.query('SELECT * FROM Pessoa');
+    client.release();
+
+    // Definir cache com expiração (TTL) no Redis
+    try {
+      await redisClient.set(cacheKey, JSON.stringify(result.rows), { EX: 300 }); // 5 minutos
+    } catch (err) {
+      console.error('Erro ao tentar definir o cache no Redis:', err);
+    }
+
+    res.status(200).json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Erro ao buscar pessoas' })
+    res.status(500).json({ error: 'Erro ao buscar pessoas' });
   }
 }
 
 export async function getPessoa(req, res) {
-  const id = req.params.id
-  const cacheKey = `pessoa:${id}`
-  console.log(cacheKey)
+  const id = req.params.id;
+  const cacheKey = `pessoa:${id}`;
+  
   try {
-    const cachedData = await redisClient.get(cacheKey)
+    const cachedData = await redisClient.get(cacheKey);
     if (cachedData) {
-      console.log('redis')
-      return res.status(200).json(JSON.parse(cachedData))
+      console.log('redis');
+      return res.status(200).json(JSON.parse(cachedData));
     }
-    console.log("db")
-    const client = await pool.connect()
-    const result = await client.query('SELECT * FROM Pessoa WHERE id = $1', [id])
-    client.release()
+    
+    console.log("db");
+    const client = await pool.connect();
+    const result = await client.query('SELECT * FROM Pessoa WHERE id = $1', [id]);
+    client.release();
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Pessoa não encontrada' })
+      // Armazena a resposta negativa no cache
+      await redisClient.set(cacheKey, JSON.stringify({ error: 'Pessoa não encontrada' }), { EX: 300 }); // Cache por 5 minutos
+      return res.status(404).json({ error: 'Pessoa não encontrada' });
     }
 
-    await redisClient.set(cacheKey, JSON.stringify(result.rows[0]))
-    res.status(200).json(result.rows[0])
+    // Armazena a pessoa encontrada no cache
+    await redisClient.set(cacheKey, JSON.stringify(result.rows[0]));
+    res.status(200).json(result.rows[0]);
   } catch (err) {
-    res.status(500).json({ error: 'Erro ao buscar pessoa' })
+    console.error('Erro ao buscar pessoa:', err);
+    res.status(500).json({ error: 'Erro ao buscar pessoa' });
   }
 }
 
 export async function insertPessoa(req, res) {
-  const { nome, idade, cargo } = req.body
+  const { nome, idade, cargo } = req.body;
+  let client;
+
   try {
-    const client = await pool.connect()
-    
-    await client.query('INSERT INTO Pessoa (nome, idade, cargo) VALUES ($1, $2, $3)', [nome, idade, cargo])
+    client = await pool.connect();
+    await client.query('INSERT INTO Pessoa (nome, idade, cargo) VALUES ($1, $2, $3)', [nome, idade, cargo]);
 
-    await resetSequence()
-    await redisClient.del('pessoas')
+    // Redefine a sequência após a inserção
+    await resetSequence();
 
-    res.status(201).json({ message: 'Pessoa criada com sucesso!' })
-    client.release()
+    // Atualiza o cache com a nova lista de pessoas
+    const allPessoas = await pool.query('SELECT * FROM Pessoa');
+    await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 }); // 5 minutos
+
+    res.status(201).json({ message: 'Pessoa criada com sucesso!' });
   } catch (err) {
-    res.status(500).json({ error: 'Erro ao inserir pessoa' })
+    console.error('Erro ao inserir pessoa:', err);
+    res.status(500).json({ error: 'Erro ao inserir pessoa' });
+  } finally {
+    if (client) {
+      client.release();
+    }
   }
 }
 
 export async function updatePessoa(req, res) {
-  const { id, nome, idade, cargo } = req.body
+  const { id, nome, idade, cargo } = req.body;
+  let client;
+
   try {
-    const client = await pool.connect()
-    await client.query('UPDATE Pessoa SET nome = $1, idade = $2, cargo = $3 WHERE id = $4', [nome, idade, cargo, id])
+    client = await pool.connect(); // Conecta ao banco
 
-    await redisClient.del('pessoas')
-    await redisClient.del(`pessoa:${id}`)
+    // Verifica se a pessoa existe antes de atualizar
+    const pessoaResult = await client.query('SELECT * FROM Pessoa WHERE id = $1', [id]);
+    
+    if (pessoaResult.rows.length === 0) {
+      // Se a pessoa não for encontrada, libera o cliente e retorna o erro
+      return res.status(404).json({ error: 'Pessoa não encontrada' });
+    }
 
-    res.status(200).json({ message: 'Pessoa atualizada com sucesso!' })
-    client.release()
+    // Atualiza a pessoa no banco de dados
+    await client.query('UPDATE Pessoa SET nome = $1, idade = $2, cargo = $3 WHERE id = $4', [nome, idade, cargo, id]);
+
+    // Busca a pessoa atualizada no banco de dados
+    const result = await client.query('SELECT * FROM Pessoa WHERE id = $1', [id]);
+    if (result.rows.length > 0) {
+      // Atualiza o cache da pessoa específica
+      try {
+        await redisClient.set(`pessoa:${id}`, JSON.stringify(result.rows[0]), { EX: 300 });
+      } catch (err) {
+        console.error('Erro ao tentar definir o cache no Redis:', err);
+      }
+    }
+
+    // Atualiza o cache "pessoas" com a nova lista do banco
+    const allPessoas = await client.query('SELECT * FROM Pessoa');
+    try {
+      await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 }); // 5 minutos
+    } catch (err) {
+      console.error('Erro ao tentar definir o cache no Redis:', err);
+    }
+
+    res.status(200).json({ message: 'Pessoa atualizada com sucesso!' });
   } catch (err) {
-    res.status(500).json({ error: 'Erro ao atualizar pessoa' })
+    res.status(500).json({ error: 'Erro ao atualizar pessoa' });
+  } finally {
+    // Certifica-se de liberar o cliente apenas uma vez, evitando múltiplas liberações
+    if (client) {
+      client.release();
+    }
   }
 }
 
 export async function deletePessoa(req, res) {
-  const id = req.params.id
+  const id = req.params.id;
+  let client;
+
   try {
-    const client = await pool.connect()
+    client = await pool.connect();
     
-    const result = await client.query('DELETE FROM Pessoa WHERE id = $1', [id])
-    client.release();
+    // Consulta a pessoa antes de deletar
+    const result = await client.query('SELECT * FROM Pessoa WHERE id = $1', [id]);
 
     if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Pessoa não encontrada' })
+      return res.status(404).json({ error: 'Pessoa não encontrada' });
     }
 
-    await redisClient.del('pessoas')
+    // Salva os detalhes da pessoa que será deletada
+    const pessoaDeletada = result.rows[0];
 
-    res.status(204).send()
+    // Deleta a pessoa
+    await client.query('DELETE FROM Pessoa WHERE id = $1', [id]);
+
+    // Redefine a sequência após a deleção
+    await resetSequence();
+
+    // Atualiza o cache "pessoas" com a nova lista do banco
+    const allPessoas = await pool.query('SELECT * FROM Pessoa');
+    try {
+      await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 }); // 5 minutos
+    } catch (err) {
+      console.error('Erro ao tentar definir o cache no Redis:', err);
+    }
+
+    // Remove o cache da pessoa deletada
+    try {
+      await redisClient.del(`pessoa:${id}`);
+    } catch (err) {
+      console.error('Erro ao tentar deletar o cache no Redis:', err);
+    }
+
+    // Retorna os detalhes da pessoa que foi deletada
+    res.status(200).json({ message: 'Pessoa deletada com sucesso!', pessoa: pessoaDeletada });
   } catch (err) {
-    res.status(500).json({ error: 'Erro ao deletar pessoa' })
+    console.error('Erro ao deletar pessoa:', err);
+    res.status(500).json({ error: 'Erro ao deletar pessoa' });
+  } finally {
+    if (client) {
+      client.release(); // Garante que o cliente seja liberado
+    }
   }
 }
+
 
 export async function createUserTable() {
   try {
