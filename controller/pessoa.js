@@ -37,7 +37,7 @@ export async function getPessoas(req, res) {
     const cachedData = await redisClient.get(cacheKey)
     if (cachedData) {
       console.log("redis")
-      return res.json(JSON.parse(cachedData))
+      return res.status(200).json(JSON.parse(cachedData))
     }
 
     console.log("db")
@@ -46,7 +46,7 @@ export async function getPessoas(req, res) {
     client.release()
 
     await redisClient.set(cacheKey, JSON.stringify(result.rows))
-    res.json(result.rows)
+    res.status(200).json(result.rows)
   } catch (err) {
     res.status(500).json({ error: 'Erro ao buscar pessoas' })
   }
@@ -55,12 +55,12 @@ export async function getPessoas(req, res) {
 export async function getPessoa(req, res) {
   const id = req.params.id
   const cacheKey = `pessoa:${id}`
-
+  console.log(cacheKey)
   try {
     const cachedData = await redisClient.get(cacheKey)
     if (cachedData) {
       console.log('redis')
-      return res.json(JSON.parse(cachedData))
+      return res.status(200).json(JSON.parse(cachedData))
     }
     console.log("db")
     const client = await pool.connect()
@@ -72,7 +72,7 @@ export async function getPessoa(req, res) {
     }
 
     await redisClient.set(cacheKey, JSON.stringify(result.rows[0]))
-    res.json(result.rows[0])
+    res.status(200).json(result.rows[0])
   } catch (err) {
     res.status(500).json({ error: 'Erro ao buscar pessoa' })
   }
@@ -87,9 +87,9 @@ export async function insertPessoa(req, res) {
 
     await resetSequence()
     await redisClient.del('pessoas')
-    
-    res.json({ statusCode: 200 })
-    client.release();
+
+    res.status(201).json({ message: 'Pessoa criada com sucesso!' })
+    client.release()
   } catch (err) {
     res.status(500).json({ error: 'Erro ao inserir pessoa' })
   }
@@ -102,8 +102,9 @@ export async function updatePessoa(req, res) {
     await client.query('UPDATE Pessoa SET nome = $1, idade = $2, cargo = $3 WHERE id = $4', [nome, idade, cargo, id])
 
     await redisClient.del('pessoas')
+    await redisClient.del(`pessoa:${id}`)
 
-    res.json({ statusCode: 200 })
+    res.status(200).json({ message: 'Pessoa atualizada com sucesso!' })
     client.release()
   } catch (err) {
     res.status(500).json({ error: 'Erro ao atualizar pessoa' })
@@ -113,10 +114,10 @@ export async function updatePessoa(req, res) {
 export async function deletePessoa(req, res) {
   const id = req.params.id
   try {
-    const client = await pool.connect();
+    const client = await pool.connect()
     
     const result = await client.query('DELETE FROM Pessoa WHERE id = $1', [id])
-    client.release()
+    client.release();
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Pessoa não encontrada' })
@@ -124,7 +125,7 @@ export async function deletePessoa(req, res) {
 
     await redisClient.del('pessoas')
 
-    res.json({ statusCode: 200, message: 'Pessoa deletada com sucesso!' })
+    res.status(204).send()
   } catch (err) {
     res.status(500).json({ error: 'Erro ao deletar pessoa' })
   }
