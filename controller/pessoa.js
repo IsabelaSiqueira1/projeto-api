@@ -1,5 +1,6 @@
-import pool from "../config.js";
-import { redisClient } from "../app.js";
+import { pool } from "../config.js"
+import { redisClient } from "../app.js"
+import { sendToQueue } from '../producer.js'
 
 export async function resetSequence() {
   try {
@@ -32,35 +33,32 @@ export async function createTable() {
 }
 
 export async function getPessoas(req, res) {
-  try {
-    const cacheKey = 'pessoas';
-    let cachedData;
+  const cacheKey = 'pessoas'
+  let cachedData
 
-    try {
-      cachedData = await redisClient.get(cacheKey);
-    } catch (err) {
-      console.error('Erro ao tentar acessar o Redis:', err);
-    }
+  try {
+    cachedData = await redisClient.get(cacheKey)
 
     if (cachedData) {
-      console.log("redis");
-      return res.status(200).json(JSON.parse(cachedData));
+      console.log("Retornando dados do Redis")
+      return res.status(200).json(JSON.parse(cachedData))
     }
-
-    console.log("db");
-    const client = await pool.connect();
-    const result = await client.query('SELECT * FROM Pessoa');
-    client.release();
-
-    try {
-      await redisClient.set(cacheKey, JSON.stringify(result.rows), { EX: 300 }); 
-    } catch (err) {
-      console.error('Erro ao tentar definir o cache no Redis:', err);
-    }
-
-    res.status(200).json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Erro ao buscar pessoas' });
+    console.error('Erro ao tentar acessar o Redis:', err)
+  }
+
+  try {
+    console.log("Consultando o banco de dados")
+    const client = await pool.connect()
+    const result = await client.query('SELECT * FROM Pessoa')
+    client.release()
+
+    await redisClient.set(cacheKey, JSON.stringify(result.rows), { EX: 300 })
+
+    res.status(200).json(result.rows)
+  } catch (err) {
+    console.error('Erro ao tentar acessar o banco de dados:', err)
+    res.status(500).json({ error: 'Erro ao buscar pessoas' })
   }
 }
 
@@ -94,27 +92,41 @@ export async function getPessoa(req, res) {
 }
 
 export async function insertPessoa(req, res) {
-  const { nome, idade, cargo } = req.body;
-  let client;
+  const { nome, idade, cargo } = req.body
 
   try {
-    client = await pool.connect();
-    await client.query('INSERT INTO Pessoa (nome, idade, cargo) VALUES ($1, $2, $3)', [nome, idade, cargo]);
+    const pessoaData = { nome, idade, cargo }
+    sendToQueue(pessoaData)
 
-    await resetSequence();
-    const allPessoas = await pool.query('SELECT * FROM Pessoa');
-    await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 });
-
-    res.status(201).json({ message: 'Pessoa criada com sucesso!' });
+    res.status(201).json({ message: 'Pessoa enviada para processamento!' })
   } catch (err) {
-    console.error('Erro ao inserir pessoa:', err);
-    res.status(500).json({ error: 'Erro ao inserir pessoa' });
-  } finally {
-    if (client) {
-      client.release();
-    }
+    console.error('Erro ao enviar pessoa para a fila:', err)
+    res.status(500).json({ error: 'Erro ao enviar pessoa para a fila' })
   }
 }
+
+// export async function insertPessoa(req, res) {
+//   const { nome, idade, cargo } = req.body
+//   let client
+
+//   try {
+//     client = await pool.connect()
+//     await client.query('INSERT INTO Pessoa (nome, idade, cargo) VALUES ($1, $2, $3)', [nome, idade, cargo])
+
+//     await resetSequence()
+//     const allPessoas = await pool.query('SELECT * FROM Pessoa')
+//     await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 })
+
+//     res.status(201).json({ message: 'Pessoa criada com sucesso!' })
+//   } catch (err) {
+//     console.error('Erro ao inserir pessoa:', err)
+//     res.status(500).json({ error: 'Erro ao inserir pessoa' })
+//   } finally {
+//     if (client) {
+//       client.release()
+//     }
+//   }
+// }
 
 export async function updatePessoa(req, res) {
   const { id, nome, idade, cargo } = req.body;
