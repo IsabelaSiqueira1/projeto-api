@@ -1,0 +1,34 @@
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:alpine
+    container_name: postgres-api
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=postgres
+    volumes:
+      - ./data:/data/postgres 
+  
+  app:
+    build: .
+    container_name: projeto-api
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/usr/src/app
+    links:
+      - postgres  
+      - redis
+    depends_on:
+      - postgres
+
+  redis:
+    image: "redis:alpine"
+    container_name: redis
+    ports:
+      - "6379:6379"
