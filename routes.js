@@ -4,6 +4,7 @@ import { Router } from "express"
 import { createTable, insertPessoa, updatePessoa, getPessoas, getPessoa, deletePessoa, getUserByUsername, insertUser } from './controller/pessoa.js'
 import { authenticateToken } from './auth.js'
 
+
 const router = Router()
 
 router.post('/register', async (req, res) => {

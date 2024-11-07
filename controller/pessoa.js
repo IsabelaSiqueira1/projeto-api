@@ -1,5 +1,6 @@
-import pool from "../config.js";
-import { redisClient } from "../app.js";
+import { pool } from "../config.js"
+import { redisClient } from "../app.js"
+import { sendToQueue } from '../producer.js'
 
 export async function resetSequence() {
   try {
@@ -32,37 +33,32 @@ export async function createTable() {
 }
 
 export async function getPessoas(req, res) {
-  try {
-    const cacheKey = 'pessoas';
-    let cachedData;
+  const cacheKey = 'pessoas'
+  let cachedData
 
-    // Tentar buscar os dados do Redis
-    try {
-      cachedData = await redisClient.get(cacheKey);
-    } catch (err) {
-      console.error('Erro ao tentar acessar o Redis:', err);
-    }
+  try {
+    cachedData = await redisClient.get(cacheKey)
 
     if (cachedData) {
-      console.log("redis");
-      return res.status(200).json(JSON.parse(cachedData));
+      console.log("Retornando dados do Redis")
+      return res.status(200).json(JSON.parse(cachedData))
     }
-
-    console.log("db");
-    const client = await pool.connect();
-    const result = await client.query('SELECT * FROM Pessoa');
-    client.release();
-
-    // Definir cache com expiração (TTL) no Redis
-    try {
-      await redisClient.set(cacheKey, JSON.stringify(result.rows), { EX: 300 }); // 5 minutos
-    } catch (err) {
-      console.error('Erro ao tentar definir o cache no Redis:', err);
-    }
-
-    res.status(200).json(result.rows);
   } catch (err) {
-    res.status(500).json({ error: 'Erro ao buscar pessoas' });
+    console.error('Erro ao tentar acessar o Redis:', err)
+  }
+
+  try {
+    console.log("Consultando o banco de dados")
+    const client = await pool.connect()
+    const result = await client.query('SELECT * FROM Pessoa')
+    client.release()
+
+    await redisClient.set(cacheKey, JSON.stringify(result.rows), { EX: 300 })
+
+    res.status(200).json(result.rows)
+  } catch (err) {
+    console.error('Erro ao tentar acessar o banco de dados:', err)
+    res.status(500).json({ error: 'Erro ao buscar pessoas' })
   }
 }
 
@@ -83,12 +79,10 @@ export async function getPessoa(req, res) {
     client.release();
 
     if (result.rows.length === 0) {
-      // Armazena a resposta negativa no cache
-      await redisClient.set(cacheKey, JSON.stringify({ error: 'Pessoa não encontrada' }), { EX: 300 }); // Cache por 5 minutos
+      await redisClient.set(cacheKey, JSON.stringify({ error: 'Pessoa não encontrada' }), { EX: 300 }); 
       return res.status(404).json({ error: 'Pessoa não encontrada' });
     }
 
-    // Armazena a pessoa encontrada no cache
     await redisClient.set(cacheKey, JSON.stringify(result.rows[0]));
     res.status(200).json(result.rows[0]);
   } catch (err) {
@@ -98,53 +92,58 @@ export async function getPessoa(req, res) {
 }
 
 export async function insertPessoa(req, res) {
-  const { nome, idade, cargo } = req.body;
-  let client;
+  const { nome, idade, cargo } = req.body
 
   try {
-    client = await pool.connect();
-    await client.query('INSERT INTO Pessoa (nome, idade, cargo) VALUES ($1, $2, $3)', [nome, idade, cargo]);
+    const pessoaData = { nome, idade, cargo }
+    sendToQueue(pessoaData)
 
-    // Redefine a sequência após a inserção
-    await resetSequence();
-
-    // Atualiza o cache com a nova lista de pessoas
-    const allPessoas = await pool.query('SELECT * FROM Pessoa');
-    await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 }); // 5 minutos
-
-    res.status(201).json({ message: 'Pessoa criada com sucesso!' });
+    res.status(201).json({ message: 'Pessoa enviada para processamento!' })
   } catch (err) {
-    console.error('Erro ao inserir pessoa:', err);
-    res.status(500).json({ error: 'Erro ao inserir pessoa' });
-  } finally {
-    if (client) {
-      client.release();
-    }
+    console.error('Erro ao enviar pessoa para a fila:', err)
+    res.status(500).json({ error: 'Erro ao enviar pessoa para a fila' })
   }
 }
+
+// export async function insertPessoa(req, res) {
+//   const { nome, idade, cargo } = req.body
+//   let client
+
+//   try {
+//     client = await pool.connect()
+//     await client.query('INSERT INTO Pessoa (nome, idade, cargo) VALUES ($1, $2, $3)', [nome, idade, cargo])
+
+//     await resetSequence()
+//     const allPessoas = await pool.query('SELECT * FROM Pessoa')
+//     await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 })
+
+//     res.status(201).json({ message: 'Pessoa criada com sucesso!' })
+//   } catch (err) {
+//     console.error('Erro ao inserir pessoa:', err)
+//     res.status(500).json({ error: 'Erro ao inserir pessoa' })
+//   } finally {
+//     if (client) {
+//       client.release()
+//     }
+//   }
+// }
 
 export async function updatePessoa(req, res) {
   const { id, nome, idade, cargo } = req.body;
   let client;
 
   try {
-    client = await pool.connect(); // Conecta ao banco
-
-    // Verifica se a pessoa existe antes de atualizar
+    client = await pool.connect(); 
     const pessoaResult = await client.query('SELECT * FROM Pessoa WHERE id = $1', [id]);
     
     if (pessoaResult.rows.length === 0) {
-      // Se a pessoa não for encontrada, libera o cliente e retorna o erro
       return res.status(404).json({ error: 'Pessoa não encontrada' });
     }
 
-    // Atualiza a pessoa no banco de dados
     await client.query('UPDATE Pessoa SET nome = $1, idade = $2, cargo = $3 WHERE id = $4', [nome, idade, cargo, id]);
-
-    // Busca a pessoa atualizada no banco de dados
     const result = await client.query('SELECT * FROM Pessoa WHERE id = $1', [id]);
+
     if (result.rows.length > 0) {
-      // Atualiza o cache da pessoa específica
       try {
         await redisClient.set(`pessoa:${id}`, JSON.stringify(result.rows[0]), { EX: 300 });
       } catch (err) {
@@ -152,19 +151,17 @@ export async function updatePessoa(req, res) {
       }
     }
 
-    // Atualiza o cache "pessoas" com a nova lista do banco
     const allPessoas = await client.query('SELECT * FROM Pessoa');
     try {
-      await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 }); // 5 minutos
+      await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 }); // 5min
     } catch (err) {
       console.error('Erro ao tentar definir o cache no Redis:', err);
     }
-
     res.status(200).json({ message: 'Pessoa atualizada com sucesso!' });
   } catch (err) {
     res.status(500).json({ error: 'Erro ao atualizar pessoa' });
   } finally {
-    // Certifica-se de liberar o cliente apenas uma vez, evitando múltiplas liberações
+    
     if (client) {
       client.release();
     }
@@ -178,45 +175,37 @@ export async function deletePessoa(req, res) {
   try {
     client = await pool.connect();
     
-    // Consulta a pessoa antes de deletar
     const result = await client.query('SELECT * FROM Pessoa WHERE id = $1', [id]);
 
     if (result.rowCount === 0) {
       return res.status(404).json({ error: 'Pessoa não encontrada' });
     }
 
-    // Salva os detalhes da pessoa que será deletada
     const pessoaDeletada = result.rows[0];
-
-    // Deleta a pessoa
     await client.query('DELETE FROM Pessoa WHERE id = $1', [id]);
 
-    // Redefine a sequência após a deleção
     await resetSequence();
 
-    // Atualiza o cache "pessoas" com a nova lista do banco
     const allPessoas = await pool.query('SELECT * FROM Pessoa');
     try {
-      await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 }); // 5 minutos
+      await redisClient.set('pessoas', JSON.stringify(allPessoas.rows), { EX: 300 });
     } catch (err) {
       console.error('Erro ao tentar definir o cache no Redis:', err);
     }
 
-    // Remove o cache da pessoa deletada
     try {
       await redisClient.del(`pessoa:${id}`);
     } catch (err) {
       console.error('Erro ao tentar deletar o cache no Redis:', err);
     }
 
-    // Retorna os detalhes da pessoa que foi deletada
     res.status(200).json({ message: 'Pessoa deletada com sucesso!', pessoa: pessoaDeletada });
   } catch (err) {
     console.error('Erro ao deletar pessoa:', err);
     res.status(500).json({ error: 'Erro ao deletar pessoa' });
   } finally {
     if (client) {
-      client.release(); // Garante que o cliente seja liberado
+      client.release(); 
     }
   }
 }
