@@ -1,38 +1,18 @@
-import express from 'express'
-import { createTable, createUserTable } from './controller/pessoa.js'
-import router from './routes.js'
-import { createClient } from 'redis'
-import amqp from 'amqplib'
-import { consumeQueue } from './consumer.js'
+import express from 'express';
+import pessoaRoutes from './routes/pessoaRoutes.js'; 
 
-const app = express()
-app.use(express.json())
+const app = express();
+const PORT = process.env.PORT || 3000;
 
-export const redisClient = createClient({
-  url: 'redis://redis:6379'
-})
+app.use(express.json());
 
-redisClient.on('error', (err) => console.log('Redis Client Error', err))
+app.get('/', (req, res) => {
+  res.send('Api Rodandooo');
+});
 
-await redisClient.connect()
+app.use('/pessoas', pessoaRoutes);
 
-app.use(router)
-
-createTable()
-createUserTable()
-
-const PORT = 3000
-
-export const connectRabbitMQ = async () => {
-  const connection = await amqp.connect('amqp://rabbitmq')
-  const channel = await connection.createChannel()
-
-  await channel.assertQueue('pessoa_queue');
-  
-  return channel
-}
-consumeQueue()
 
 app.listen(PORT, () => {
-  console.log(`Aplicação rodando na porta ${PORT}`);
-})
+  console.log(`Server running on port ${PORT}`);
+});
